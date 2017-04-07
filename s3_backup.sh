@@ -1,3 +1,5 @@
+# replica set backup
+
 set -eo pipefail
 
 export GZIP=-9
@@ -7,8 +9,6 @@ mongo_path="/opt/mongobackup/"
 date_b=$(date -u "+%F-%H%M%S")
 
 file="backup-$date_b.tar.gz"
-
-aws_path="/awscluster/"
 
 mongodump  --gzip --out $mongo_path/tmp/
 
@@ -22,33 +22,26 @@ mv tmp/backup* storage/
 
 oldest_file=$(find $mongo_path/storage/ -type f | sort | head -n 1)
 
-split -n 4 $oldest_file "$mongo_path/tmp/$file-part-"
+aws s3 cp $oldest_file s3://bitpoolmongobackup/awscluster/
 
-acl="x-amz-acl:public-read"
+cd $mongo_path/storage && ls -1t  | tail -n +4  | xargs rm -rf
 
-content_type="application/x-compressed-tar"
-
-for part in $(ls $mongo_path/tmp/ | grep "part")
-do
-        date=$(date +"%a, %d %b %Y %T %z")
-        string="PUT\n\n$content_type\n$date\n$acl\n/$bucket$aws_path$part"
-        signature=$(echo -en "${string}" | openssl sha1 -hmac "${AWS_SECRET_KEY}" -binary | base64)
-
-	curl -X PUT -T "$mongo_path/tmp/$part" \
-  	-H "Host: $bucket.s3.amazonaws.com" \
-  	-H "Date: $date" \
-  	-H "Content-Type: $content_type" \
-  	-H $acl \
-  	-H "Authorization: AWS ${AWS_ACCESS_KEY}:$signature" \
-  	"https://$bucket.s3.amazonaws.com$aws_path$part"
-
-  		if [ $(echo $?) < /dev/null ]; then
-    		    echo SUCCESS
-  		else
-    		    echo FAIL
-    		    exit 1
-    	      	fi
-done
-
-ls -1t $mongo_path/storage/  | tail -n +4  | xargs rm -rf
 find $mongo_path/tmp/ -type f -print -delete
+
+#config server backup
+
+sudo service mongod-configsrv stop
+
+configdb_path="/data/bitpool-cluster_config_115"
+
+date_b=$(date -u "+%F-%H%M%S")
+
+file_c="backup-configdb-$date_b.tar.gz"
+
+sudo -u mongodb tar cvzf /opt/mongobackup/$file_c $configdb_path
+
+aws s3 cp /opt/mongobackup/$file_c s3://bitpoolmongobackup/awscluster/
+
+sudo -u mongodb rm -rf  /opt/mongobackup/$file_c
+
+sudo service mongod-configsrv start
